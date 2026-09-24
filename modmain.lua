@@ -218,8 +218,12 @@ local UNIT_ICON   = 28
 --   用户要求「有多余的方案就都提供，多给几个图也可以」。
 --   3 个 150px 的框 + 20px 间距 = 490px，从 485 排到 975，都在面板内；
 --   左侧四季表只占 22~426，互不干扰。
-local UNIT_FIRST_CX = 560        -- 第 1 个图的中心 x（框 150 → 485~635）
-local UNIT_STEP     = 170        -- 相邻两图的中心距
+-- ★ v2.6.11：标注从 13 放大到 16 号（用户反馈太小）——
+--   最长那条「1. 南瓜3+芦笋3+土豆3」16 号约 180px 宽（半宽 90），
+--   图心距得拉到 185 才不会互相压字；三个图心 530/715/900，
+--   最右 900+90=990 仍在面板内，最左 530-90=440 也不压四季表（右缘 426）。
+local UNIT_FIRST_CX = 530        -- 第 1 个图的中心 x
+local UNIT_STEP     = 185        -- 相邻两图的中心距
 local UNIT_CY       = -170       -- 框中心 y → 框占 -95 ~ -245
 local UNIT_MAX      = 3          -- 最多画几个方案
 local LAYOUT_X1   = 630
@@ -1420,11 +1424,11 @@ function FarmHelperPanel:RefreshPlan(season)
             -- 拆两行：三个作物的方案（冬季那种）一行放不下会被挤出面板。
             -- ★ 必须 ANCHOR_MIDDLE —— 默认左对齐时左边缘落在 cx 上，
             --   第三个图（cx=900）的标注会顶出面板右边界（_layout.py 抓到过 26.9px）。
-            AddText(self.layout_one_root, cx, UNIT_CY - 88,
-                string.format("%d. %s", i, table.concat(parts, "+")), 13, col,
+            AddText(self.layout_one_root, cx, UNIT_CY - 86,
+                string.format("%d. %s", i, table.concat(parts, "+")), 16, col,
                 ANCHOR_MIDDLE)
-            AddText(self.layout_one_root, cx, UNIT_CY - 104,
-                string.format("x%d 块", p.blocks), 13, col, ANCHOR_MIDDLE)
+            AddText(self.layout_one_root, cx, UNIT_CY - 106,
+                string.format("x%d 块", p.blocks), 16, col, ANCHOR_MIDDLE)
         end
     end
 end
