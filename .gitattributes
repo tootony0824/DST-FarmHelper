@@ -1,0 +1,11 @@
+# 一律用 LF —— Lua 源文件保持 LF 最稳（Windows 上默认会把 LF 转成 CRLF）
+* text=auto eol=lf
+
+*.lua  text eol=lf
+*.md   text eol=lf
+*.txt  text eol=lf
+
+# 二进制（以后加截图/贴图时用）
+*.png  binary
+*.jpg  binary
+*.zip  binary
