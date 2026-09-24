@@ -562,6 +562,15 @@ local PAGE_HINT = KEY_LABEL[PAGE_KEY] or "切页键"
 local FindChains
 local FindUnitPlan      -- v2.6.0：每块地皮的零和配比。定义在 CropById 之后（词法作用域）
 
+-- ★★★ v2.6.10 修实机崩溃：`UnitPlans` / `TileFamilyCount` 定义在 1500+ 行，
+--   而 `RefreshPlan` 在 1367 行就调用了它们 —— Lua 的词法作用域下，
+--   后定义的 local 对前面的函数**不可见**，会被当成全局变量取到 nil。
+--   表现是进游戏直接弹「attempt to call global 'UnitPlans' (a nil value)」。
+--   （`FindChains` / `FindUnitPlan` 当初前置声明过，所以没事；
+--     这两个是 v2.6.9 新加的，忘了同样处理。）
+local UnitPlans         -- v2.6.9：前 N 个方案（面板列主方案 + 备选用）
+local TileFamilyCount   -- v2.6.9：家族逐株判定（第一页图标注也要用）
+
 -- 一株作物的养分净变化 { 催长剂, 堆肥, 粪肥 }
 local function NetDelta(consume)
     local total = consume[1] + consume[2] + consume[3]
@@ -1607,7 +1616,8 @@ FindUnitPlan = function(season)
 end
 
 -- 前 N 个方案 —— 面板用来列「主方案 + 备选」
-local function UnitPlans(season, want)
+--   ★ 赋值式（不是 `local function`）—— 上面已前置声明，见那段注释
+UnitPlans = function(season, want)
     local all = EnumUnitPlans(season)
     local out = {}
     for i = 1, math.min(want or 3, #all) do
@@ -2329,8 +2339,10 @@ end
 -- 几何：块内 3×3 九宫格（间距 TILL_SP = 1.25），多块时块心距 TILE_GAP = 4。
 -- 摆位：同种连成一列；「需要跨块」的作物优先排到靠接缝那侧 ——
 --       两块地皮的**同一列相距正好 4.0**，而判定是「小于 4」，那一列直接作废。
+--
+--   ★ 赋值式定义（上面有前置声明）—— 因为 RefreshPlan（1367 行）在它之前就调用了。
 --──────────────────────────────────────────────────────────────────────────────
-local function TileFamilyCount(items, blocks)
+TileFamilyCount = function(items, blocks)
     local need_ids, ok_ids = {}, {}
     for _, it in ipairs(items) do
         if it.n < FAMILY_MIN then table.insert(need_ids, it.id)
