@@ -559,11 +559,6 @@ local PAGE_HINT = KEY_LABEL[PAGE_KEY] or "切页键"
 --  于是只要让三组作物「消耗掉的总点数」彼此相等，整块地的养分就会一直不变。
 --==============================================================================
 
--- ★ 前向声明：轮作算法（SimulateChain / FindChains）定义在下面「轮作」那一段，
---   但第一页的 RefreshPlan 也要拿它算「本季种法」。
---   Lua 的 local 走词法作用域 —— 定义在后面的 local，前面的函数根本看不见
---   （会被当成全局变量取到 nil），所以这里先把名字占下来。
-local FindChains
 local FindUnitPlan      -- v2.6.0：每块地皮的零和配比。定义在 CropById 之后（词法作用域）
 
 -- ★★★ v2.6.10 修实机崩溃：`UnitPlans` / `TileFamilyCount` 定义在 1500+ 行，
@@ -786,15 +781,14 @@ local FarmHelperPanel = Class(Widget, function(self, owner)
     bg:SetPosition(PANEL_W * 0.5, -PANEL_H * 0.5, 0)
     bg:SetTint(0.04, 0.04, 0.05, 0.86)
 
-    -- 三页的内容各放一个容器，切页时整块 Show/Hide
-    -- ★ v2.5.0 加第三页「轮作」：前两页只能算出「这一茬种几个」，
-    --   而养分是每格单独记账的，总和配平救不了单格漂移 —— 轮作页负责解决这个。
+    -- 两页的内容各放一个容器，切页时整块 Show/Hide
+    -- ★ v2.6.13：第三页「轮作」删了 —— 一块地皮是一份共享账本（三轴各 0~100），
+    --   9 个坑同时扣还，每一茬都必须配平；账本每茬回到原样，没有要轮的东西。
+    --   （轮作链的「闭合」是 1 株/稀疏视角，密排 + 共享账本下不成立。）
     self.page1 = self:AddChild(Widget("page1"))
     self.page1:SetPosition(0, 0, 0)
     self.page2 = self:AddChild(Widget("page2"))
     self.page2:SetPosition(0, 0, 0)
-    self.page3 = self:AddChild(Widget("page3"))
-    self.page3:SetPosition(0, 0, 0)
 
     -- 标题栏。这块是拖动手柄，比底板亮一点，让人看得出能抓。
     self.grip_bg = self:AddChild(Image("images/global.xml", "square.tex"))
@@ -908,15 +902,15 @@ local FarmHelperPanel = Class(Widget, function(self, owner)
         "养分要有存量，循环才启动得起来；杂草只吃不还（各 2 点），会长草就先拔。",
         21, C.warn)
 
-    -- ★ v2.4.4 轮作提示（用户实机反馈"照配平种会缺肥"暴露的机制盲区）：
-    --   养分账本是**每格独立**的（farming_manager.lua:400-455，消耗和归还
-    --   都在作物自己那一格结算），配平只保证全图总和归零。
-    --   单一格永远单向漂移：胡萝卜格每阶段催 -4 —— 一两茬后枯竭。
-    --   解法只有轮作（下茬同格换互补作物）或备腐烂物随手补。
+    -- ★ v2.6.13：这行原来提示「换茬轮作请见第三页」—— 第三页已删。
+    --   那句话本身就不准：一块地皮是**一份共享账本**（farming_manager.lua:400
+    --   按地皮取账本，三轴各 0~100），9 个坑的作物同时伸手扣还，
+    --   所以**每一茬都必须配平**，不是「总和归零就没事」——
+    --   那才是轮作页的立论，立论不成立，页就删了。
     -- ★ v2.5.2：起点 PAD → 79，补上光标 x=60（不设 region 时文字以 x 为中心展开，
     --   左边缘会偏左半个字宽，PAD=22 时够不到 60）。
     AddText(self.page1, 79, -1008,
-        "养分按格结算：配平只是总和归零，同格连种会单向漂移；换茬轮作请见第三页。",
+        "养分按地皮记账：照推荐配比种，每块地皮的账本每茬都回到原样，不用施肥。",
         21, C.note)
 
     --==========================================================================
@@ -927,7 +921,7 @@ local FarmHelperPanel = Class(Widget, function(self, owner)
     self.plan_counts    = nil         -- 一键配平的建议结果；nil = 手动模式
     -- ★ v2.6.8：tile_mode 整个删了 —— 地皮数现在由算法按「每种凑够 4 株要几块」定。
     self.cur_page       = 1
-    self.buttons        = { {}, {}, {} }  -- 每页的按钮，命中检测用（v2.5.0 三页）
+    self.buttons        = { {}, {} }  -- 每页的按钮，命中检测用（v2.6.13 两页）
     self.mouse_was_down = false
 
     -- ★ v2.6.7：配平器的输入只剩「考虑家族」一个开关。
@@ -1041,101 +1035,17 @@ local FarmHelperPanel = Class(Widget, function(self, owner)
     self.diag_root   = self.page2:AddChild(Widget("diag_root"))
     self.diag_root:SetPosition(0, 0, 0)
 
-    --══════════════════════════════════════════════════════════════════════
-    --  第三页：轮作（v2.5.0）
-    --
-    --  这一页解决的问题跟第二页不一样：第二页算的是「这一茬种几个」，
-    --  这里算的是「同一格按什么顺序换茬」。养分是每格一本账，
-    --  只有让每格自己的前后茬抵消，地才不会越种越薄。
-    --══════════════════════════════════════════════════════════════════════
-    AddText(self.page3, PAD, -92,
-        "配平只让整块地「加起来」是 0，可养分是每格单独记账的 ——", 24, C.note)
-    AddText(self.page3, PAD, -126,
-        "要让地不缺肥，得让同一格的前后茬互相抵消。挑作物，下面给轮作链：",
-        22, C.warn)
-
-    AddText(self.page3, PAD, -166, "我想种的作物（点右侧切换，默认勾当季）：", 22, C.head)
-
-    -- 默认勾选：进游戏时是当前季节的当季作物。拿不到季节就全勾上。
-    local s0 = GetSeason()
-    self.rot_on     = {}   -- id -> 要不要参与
-    self.rot_btn    = {}   -- id -> 按钮（改上面那两个字用）
-    self.rot_season = {}   -- id -> 时令文字
-    for _, c in ipairs(CROPS) do
-        if s0 == nil then
-            self.rot_on[c.id] = true
-        else
-            self.rot_on[c.id] = (c.seasons ~= nil and c.seasons[s0]) or false
-        end
-    end
-
-    -- 14 种作物，两列 × 7 行。一行 = 图标 + 名字 + 时令 + 开关。
-    -- 行距 44：图标 22 高的上下都不会碰到邻行（名字 24 号，占 ±12）。
-    for i, crop in ipairs(CROPS) do
-        local col  = (i - 1) % 2
-        local rowi = math.floor((i - 1) / 2)
-        local cx   = (col == 0) and 60 or 560
-        local cy   = -200 - rowi * 44
-
-        AddItemIcon(self.page3, crop.id, ".tex", cx + 18, cy, ICON)
-        -- ★ v2.5.1：一样补上种子名（16 号，在下层），挑作物的时候也认得出种子。
-        --   行距 44 比第二页更窄，所以名字 24 → 22、种子名压到 16：
-        --   作物名 cy+11（占 cy~cy+22）、种子名 cy-11（占 cy-19~cy-3），
-        --   图标 36 居中（cy±18），相邻行之间都还有 4~8px。
-        AddText(self.page3, cx + 46, cy + 11, PlantName(crop.id), 22, C.text)
-        AddText(self.page3, cx + 46, cy - 11, SeedName(crop.id), 16, C.seed)
-
-        -- 先把 id 抓成局部变量再进闭包，否则所有按钮都会改到最后一种作物
-        local rid = crop.id
-        -- 时令跟作物名同一层，种子名在下层，两者 y 不相交
-        self.rot_season[rid] = AddText(self.page3, cx + 132, cy + 11, "", 18, C.dim)
-
-        local rb = AddButton(self.page3, cx + 320, cy, 96, 36, "不要",
-            function() self:ToggleRotCrop(rid) end, 22)
-        table.insert(self.buttons[3], rb)
-        self.rot_btn[rid] = rb
-    end
-
-    -- ★ x=95：150 宽 → 占 20~170，左边留得住（60 会伸到底板外 15px）
-    local r_s = AddButton(self.page3, 95, -510, 150, 40, "只选当季",
-        function() self:PickRotCrops("season") end, 22)
-    local r_a = AddButton(self.page3, 230, -510, 110, 40, "全选",
-        function() self:PickRotCrops("all") end, 22)
-    local r_n = AddButton(self.page3, 360, -510, 110, 40, "清空",
-        function() self:PickRotCrops("none") end, 22)
-    table.insert(self.buttons[3], r_s)
-    table.insert(self.buttons[3], r_a)
-    table.insert(self.buttons[3], r_n)
-
-    AddText(self.page3, PAD, -556,
-        "轮作方案（每格照这个顺序换茬，走完一轮账本回到原点）：", 24, C.head)
-
-    -- 方案列表随勾选重建，挂在 rot_root 下面
-    self.rot_root = self.page3:AddChild(Widget("rot_root"))
-    self.rot_root:SetPosition(0, 0, 0)
-
-    AddText(self.page3, PAD, -870,
-        "水位 = 一轮里三轴最低掉到多少（起始 30 估）：掉到 0 就吃压力、出不了巨大。", 20, C.dim)
-    AddText(self.page3, PAD, -900,
-        "作物只搬运不消灭：三轴总量守恒，换个吃富余那根轴的作物，格子自己就养回来。", 20, C.dim)
-    AddText(self.page3, PAD, -930,
-        "唯一真流失的是归还顶到 100（超出被丢掉）；每格一本账，全地照同一条链走就行。", 20, C.dim)
-
-    -- 标题栏里的分页按钮（常驻，三页都登记）
+    -- 标题栏里的分页按钮（常驻，两页都登记）
     -- 高 40、y=-24 → 占 -4 ~ -44，整块落在 48 高的标题栏里
-    -- ★ v2.5.0：多加一个「轮作」页，三个标签整体左移、收窄到 80 宽，
-    --   右边界 620，给「复位」(650~730) 和按键提示 (780 起) 留够位置。
+    -- ★ v2.6.13：三页改两页（轮作页删了），tab3 一起删。
     local tab1 = AddButton(self, 430, -24, 80, 40, "信息",
         function() self:SwitchPage(1) end, 26)
     local tab2 = AddButton(self, 510, -24, 80, 40, "种植",
         function() self:SwitchPage(2) end, 26)
-    local tab3 = AddButton(self, 590, -24, 80, 40, "轮作",
-        function() self:SwitchPage(3) end, 26)
-    self.tab_btns = { tab1, tab2, tab3 }
-    for p = 1, 3 do
+    self.tab_btns = { tab1, tab2 }
+    for p = 1, 2 do
         table.insert(self.buttons[p], tab1)
         table.insert(self.buttons[p], tab2)
-        table.insert(self.buttons[p], tab3)
     end
 
     -- 复位按钮：把面板挪回默认位置。
@@ -1143,16 +1053,14 @@ local FarmHelperPanel = Class(Widget, function(self, owner)
     -- 占 650~730，左边让开「轮作」(到 630)，右边让开按键提示 (从 780 起)。
     local reset = AddButton(self, 690, -24, 80, 40, "复位",
         function() self:ResetPos() end, 24)
-    for p = 1, 3 do
+    for p = 1, 2 do
         table.insert(self.buttons[p], reset)
     end
 
     self:RefreshTabs()
 
     self.page2:Hide()
-    self.page3:Hide()
     self:RefreshDemo()
-    self:RefreshRotation()
 
     self:RefreshRows()
 
@@ -1733,150 +1641,6 @@ local function SearchTilePlan(avail, per_tile)
     return all[1], all
 end
 
---==============================================================================
---  轮作（v2.5.0 新增）
---
---  为什么非要这一页：CycleNutrientsAtPoint() 是**按格**记账的
---  （farming_manager.lua:400 进来先 GetTileNutrients(x, y)，按地皮格子存）。
---  第二页的配平只保证「整块地这一茬的净变化加起来是 0」；
---  可把 9 株番茄 + 9 株土豆摊进 18 个格子，每格都是单向搬运 ——
---  番茄格的催长剂、堆肥一路掉到 0，土豆格的粪肥一路掉到 0。
---
---  那「缺肥」到底是什么？看源码这两行就明白了：
---      consumptioncount = math.min(nutrients[n_type], count)   -- 有多少扣多少
---      total_restore_count = total_restore_count + consumptioncount
---      depleted = depleted or consumptioncount ~= count
---  扣的量 = 还的量，所以**三轴总量是守恒的**：作物只搬运，不生产也不消灭。
---  连种同一种的后果不是「养分用光了」，而是**全堆到一根轴上、另两根见底**。
---  见底之后那一茬会扣不够 → depleted → 吃一次压力（出不了巨大作物）。
---
---  ★ 唯一真会流失养分的地方在 AddTileNutrients()：
---        math.clamp(_n + nutrient, 0, 100)
---    归还时把某根轴顶过 100，超出的部分直接丢掉。扣不够反而不流失
---    （扣得少、还得也少，两边抵消）。
---
---  既然总量守恒，救回来就不用施肥 —— 换个「吃富余那根轴」的作物，
---  它自己会把养分搬回去。所以真正省事的种法，是让**同一格**的前后茬互相抵消：
---  上一茬把养分从第 1 轴搬到第 3 轴，下一茬再搬回来。
---  净变化三项之和恒为 0，只要找出加起来为 0 的作物链，每格照着轮就行。
---==============================================================================
-
--- 模拟用的起始水位。tuning.lua:5748 STARTING_NUTRIENTS_MIN/MAX = 20/40，取中。
-local SOIL_START = 30
-
--- 把一串作物按顺序种在同一格，逐阶段模拟（跟源码一致：
--- 每个生长阶段扣一次、再还一次，最后 AddTileNutrients 钳到 0~100）。
--- low  = 这一轮里三轴最低掉到多少（掉到 0 就扣不够、吃压力）
--- high = 最高顶到多少（顶到 100 就会丢掉超出的部分，真流失）
-local function SimulateChain(chain)
-    local soil = { SOIL_START, SOIL_START, SOIL_START }
-    local low, high = SOIL_START, SOIL_START
-
-    for _, id in ipairs(chain) do
-        local crop = CropById(id)
-        if crop == nil then return nil end
-        local consume = crop.consume
-
-        -- 归还到「不消耗」的那几根轴上。S/M/L 的总量都能被轴数整除，
-        -- 所以源码里那段「余数随机分配」在本作数值下永远是 0，不用管。
-        local zeros = 0
-        for i = 1, 3 do
-            if consume[i] == 0 then zeros = zeros + 1 end
-        end
-
-        for _ = 1, STAGE_COUNT do
-            local got = 0
-            for a = 1, 3 do
-                if consume[a] > 0 then
-                    local take = math.min(soil[a], consume[a])  -- 有多少扣多少
-                    soil[a] = soil[a] - take
-                    got = got + take
-                end
-            end
-            if zeros > 0 then
-                local each = math.floor(got / zeros)
-                for a = 1, 3 do
-                    if consume[a] == 0 then
-                        soil[a] = soil[a] + each
-                    end
-                end
-            end
-            for a = 1, 3 do
-                if soil[a] < 0   then soil[a] = 0   end
-                if soil[a] > 100 then soil[a] = 100 end
-                if soil[a] < low  then low  = soil[a] end
-                if soil[a] > high then high = soil[a] end
-            end
-        end
-    end
-
-    local closed = (soil[1] == SOIL_START
-                and soil[2] == SOIL_START
-                and soil[3] == SOIL_START)
-    return { closed = closed, low = low, high = high }
-end
-
--- 在 ids 里找出所有能闭合的轮作链（长度 2 或 3，同种作物可重复出现）。
--- 排序：全当季优先 > 茬数少优先 > 水位高优先 > 峰位低优先 > 种类多优先。
--- ★ 注意：这里用的是前面 `local FindChains` 的前向声明，别再写 local。
-FindChains = function(ids, season)
-    local best = {}   -- 键 = 排序后的作物集合，同一个循环换个起点算同一条
-
-    local function consider(chain)
-        local sim = SimulateChain(chain)
-        if sim == nil or not sim.closed then return end
-
-        local sorted = {}
-        for _, id in ipairs(chain) do table.insert(sorted, id) end
-        table.sort(sorted)
-        local key = table.concat(sorted, ",")
-
-        local old = best[key]
-        if old ~= nil and old.low >= sim.low then return end
-
-        local all_season = true
-        for _, id in ipairs(chain) do
-            local crop = CropById(id)
-            if crop == nil or crop.seasons == nil or not crop.seasons[season] then
-                all_season = false
-            end
-        end
-
-        local kinds, kind_n = {}, 0
-        for _, id in ipairs(chain) do kinds[id] = true end
-        for _ in pairs(kinds) do kind_n = kind_n + 1 end
-
-        best[key] = {
-            chain = chain, low = sim.low, high = sim.high,
-            all_season = all_season, kind_n = kind_n,
-        }
-    end
-
-    local n = #ids
-    for i = 1, n do
-        for j = 1, n do
-            consider({ ids[i], ids[j] })
-            for k = 1, n do
-                consider({ ids[i], ids[j], ids[k] })
-            end
-        end
-    end
-
-    local out = {}
-    for _, v in pairs(best) do table.insert(out, v) end
-
-    table.sort(out, function(x, y)
-        if x.all_season ~= y.all_season then return x.all_season end
-        if #x.chain     ~= #y.chain     then return #x.chain < #y.chain end
-        if x.low        ~= y.low        then return x.low > y.low end
-        -- 顶到 100 会丢养分，峰位低的更干净
-        if x.high       ~= y.high       then return x.high < y.high end
-        return x.kind_n > y.kind_n
-    end)
-
-    return out
-end
-
 -- − / + 按钮
 function FarmHelperPanel:AdjustSeed(id, delta)
     local cur = self.seed_counts[id] or 0
@@ -2170,22 +1934,18 @@ function FarmHelperPanel:AutoBalanceLegacy()
 end
 
 -- 切页
--- ★ v2.5.0：两页变三页。先把三页全藏掉再单独 Show，
+-- ★ v2.6.13：回到两页。先把两页全藏掉再单独 Show，
 --   免得漏掉哪一块导致两页内容叠在一起。
 function FarmHelperPanel:SwitchPage(n)
     self.cur_page = n
     self.page1:Hide()
     self.page2:Hide()
-    self.page3:Hide()
 
     if n == 1 then
         self.page1:Show()
-    elseif n == 2 then
+    else
         self.page2:Show()
         self:RefreshDemo()
-    else
-        self.page3:Show()
-        self:RefreshRotation()   -- 换季之后默认勾选会变，进页时重算一次
     end
 
     self:RefreshTabs()
@@ -2199,100 +1959,6 @@ function FarmHelperPanel:RefreshTabs()
         if b.bg ~= nil then
             b.bg:SetTint(1, 1, 1, b.tab_on and TAB_ALPHA_ON or BUTTON_ALPHA)
         end
-    end
-end
-
---──────────────────────────────────────────────────────────────────────────────
---  第三页：勾选作物的三个动作（v2.5.0）
---──────────────────────────────────────────────────────────────────────────────
-
--- 单个作物：要 / 不要 反过来
-function FarmHelperPanel:ToggleRotCrop(id)
-    self.rot_on[id] = not self.rot_on[id]
-    self:RefreshRotation()
-end
-
--- 批量：只选当季 / 全选 / 清空
-function FarmHelperPanel:PickRotCrops(mode)
-    local season = GetSeason()
-    for _, c in ipairs(CROPS) do
-        if mode == "all" then
-            self.rot_on[c.id] = true
-        elseif mode == "none" then
-            self.rot_on[c.id] = false
-        else
-            self.rot_on[c.id] = (season ~= nil and c.seasons ~= nil
-                                 and c.seasons[season]) or false
-        end
-    end
-    self:RefreshRotation()
-end
-
--- 重算方案列表。勾选项变了、换季了、进这一页了，都走一遍。
-function FarmHelperPanel:RefreshRotation()
-    if self.rot_root == nil then return end
-    self.rot_root:KillAllChildren()
-
-    local season = GetSeason()
-
-    -- ① 先刷 14 行的开关文字和时令标记
-    for _, c in ipairs(CROPS) do
-        local b = self.rot_btn[c.id]
-        if b ~= nil and b.label_text ~= nil then
-            b.label_text:SetString(self.rot_on[c.id] and "要" or "不要")
-            SetColourOf(b.label_text, self.rot_on[c.id] and C.now or C.dim)
-        end
-        local s = self.rot_season[c.id]
-        if s ~= nil then
-            local good = (season ~= nil and c.seasons ~= nil
-                          and c.seasons[season]) or false
-            s:SetString(good and "当季" or "过季")
-            SetColourOf(s, good and C.now or C.dim)
-        end
-    end
-
-    -- ② 收起勾上的作物，算方案
-    local ids = {}
-    for _, c in ipairs(CROPS) do
-        if self.rot_on[c.id] then table.insert(ids, c.id) end
-    end
-
-    if #ids == 0 then
-        AddText(self.rot_root, PAD, -596,
-            "先勾上作物（至少两种，一种跟自己抵消不了）。", 22, C.warn)
-        return
-    end
-
-    local chains = FindChains(ids, season)
-
-    if #chains == 0 then
-        AddText(self.rot_root, PAD, -596,
-            "这几样凑不出闭合的链：再勾一两样别的试试。", 22, C.warn)
-        AddText(self.rot_root, PAD, -640,
-            "（规律：得让三种养分被吃掉的总量一样多，才回得到原点）", 20, C.dim)
-        return
-    end
-
-    -- ③ 列前 6 条。第一条是推荐（全当季 + 茬数少 + 水位高）
-    local n = math.min(6, #chains)
-    for i = 1, n do
-        local ch = chains[i]
-        local y  = -596 - (i - 1) * 44
-
-        local parts = {}
-        for _, id in ipairs(ch.chain) do
-            table.insert(parts, PlantName(id))
-        end
-
-        -- ★ TALKINGFONT 里没有箭头字形，写「→」会渲染成问号 —— 用 ASCII 的 >
-        AddText(self.rot_root, PAD, y,
-            i .. ". " .. table.concat(parts, " > "), 26,
-            (i == 1) and C.title or C.text)
-
-        AddText(self.rot_root, 430, y,
-            string.format("%d茬  水位%d  %s", #ch.chain, ch.low,
-                ch.all_season and "全当季" or "含过季"),
-            20, ch.all_season and C.now or C.warn)
     end
 end
 
@@ -3212,7 +2878,7 @@ local function SwitchPanelPage()
         panel:SwitchPage(2)
     else
         -- v2.5.0：三页轮流（信息 → 种植 → 轮作 → 信息）
-        panel:SwitchPage(panel.cur_page % 3 + 1)
+        panel:SwitchPage(panel.cur_page % 2 + 1)
     end
 end
 
