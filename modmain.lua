@@ -1158,6 +1158,26 @@ end
 
 -- 作物属于哪一组：1 = 主要吃催长剂，2 = 堆肥，3 = 粪肥。
 -- 番茄 (2,2,0) 和西瓜 (0,2,2) 同时吃两种，方向不唯一，返回 nil（不参与排布）。
+-- ★★★ v2.6.15 修复：v2.6.14 清死代码时**误删**了两个还在用的东西。
+--
+--   删 `PRICE` 表时我用的区间是「从 PRICE 的注释 → 到 `local function CropGroup`」，
+--   而 `STAGE_COUNT` 和 `CropById` 恰好夹在这两端之间 —— 被区间一并吞掉了。
+--   表现：进游戏直接崩，堆栈指向 `EnumUnitPlans`：
+--       attempt to call global 'CropById' (a nil value)
+--
+--   ★ 教训（写进技能了）：用「锚点区间」删代码时，区间里除了目标还可能有别人。
+--     删完必须单独查一遍「**引用了但从未定义/声明**」的名字 ——
+--     原来的静态检查只查「使用早于定义」，这种情况它一声不吭。
+local STAGE_COUNT = 4          -- 一季约 4 个耗肥阶段（sprout/small/med/grown）
+
+-- 按 id 取作物定义
+local function CropById(id)
+    for _, c in ipairs(CROPS) do
+        if c.id == id then return c end
+    end
+    return nil
+end
+
 -- 家族要求：同种作物 ≥4 株（含自己），判定半径 4 世界单位。
 -- tuning.lua:5799-5800 FARM_PLANT_SAME_FAMILY_MIN / FARM_PLANT_SAME_FAMILY_RADIUS
 local FAMILY_MIN = 4
